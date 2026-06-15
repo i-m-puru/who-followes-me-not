@@ -81,6 +81,83 @@ function extractUsersFromTitleRelationship(
   return { users, warnings };
 }
 
+function extractUsersFromLabelValuesArray(
+  json: unknown,
+  file: string,
+): { users: NormalizedUser[]; warnings: ParseWarning[] } {
+  const warnings: ParseWarning[] = [];
+  const users: NormalizedUser[] = [];
+
+  if (!Array.isArray(json)) {
+    return { users, warnings };
+  }
+
+  for (const item of json) {
+    const labelValues = (item as { label_values?: unknown })?.label_values;
+    if (!Array.isArray(labelValues)) continue;
+
+    let username: string | undefined;
+    let displayUsername: string | undefined;
+    let href: string | undefined;
+
+    for (const lv of labelValues) {
+      const label = (lv as { label?: unknown })?.label;
+      const value = (lv as { value?: unknown })?.value;
+      if (typeof value !== "string" || !value.trim()) continue;
+      if (label === "Username") {
+        username = normalizeUsername(value);
+        displayUsername = value;
+      } else if (label === "URL") {
+        href = value;
+      } else if (label === "Name" && !displayUsername) {
+        displayUsername = value;
+      }
+    }
+
+    if (!username) continue;
+    const timestamp = (item as { timestamp?: unknown })?.timestamp;
+    users.push({
+      username,
+      displayUsername: displayUsername ?? username,
+      href: href?.includes("instagram.com") ? href : undefined,
+      timestamp: typeof timestamp === "number" ? timestamp : undefined,
+      sourceFile: file,
+    });
+  }
+
+  return { users, warnings };
+}
+
+function extractUsersFromValueRelationshipOrLabelValues(
+  json: unknown,
+  file: string,
+  relationshipKey: string,
+): { users: NormalizedUser[]; warnings: ParseWarning[] } {
+  const obj = json as Record<string, unknown> | null;
+  const list =
+    obj && typeof obj === "object" && !Array.isArray(obj)
+      ? obj[relationshipKey]
+      : undefined;
+
+  if (Array.isArray(list)) {
+    return extractUsersFromValueRelationship(json, file, relationshipKey);
+  }
+
+  if (Array.isArray(json)) {
+    if (json.length === 0) {
+      return { users: [], warnings: [] };
+    }
+    const hasLabelValues = json.some((item) =>
+      Array.isArray((item as { label_values?: unknown })?.label_values),
+    );
+    if (hasLabelValues) {
+      return extractUsersFromLabelValuesArray(json, file);
+    }
+  }
+
+  return extractUsersFromValueRelationship(json, file, relationshipKey);
+}
+
 function extractUsersFromValueRelationship(
   json: unknown,
   file: string,
@@ -341,7 +418,7 @@ export async function parseInstagramConnectionsFromZip(
     if (text != null) {
       const parsed = safeJsonParse(text, pendingPath);
       if (parsed.ok) {
-        const extracted = extractUsersFromValueRelationship(
+        const extracted = extractUsersFromValueRelationshipOrLabelValues(
           parsed.value,
           pendingPath,
           "relationships_follow_requests_sent",
@@ -360,7 +437,7 @@ export async function parseInstagramConnectionsFromZip(
     if (text != null) {
       const parsed = safeJsonParse(text, recentPath);
       if (parsed.ok) {
-        const extracted = extractUsersFromValueRelationship(
+        const extracted = extractUsersFromValueRelationshipOrLabelValues(
           parsed.value,
           recentPath,
           "relationships_permanent_follow_requests",
@@ -379,7 +456,7 @@ export async function parseInstagramConnectionsFromZip(
     if (text != null) {
       const parsed = safeJsonParse(text, recentlyUnfollowedPath);
       if (parsed.ok) {
-        const extracted = extractUsersFromValueRelationship(
+        const extracted = extractUsersFromValueRelationshipOrLabelValues(
           parsed.value,
           recentlyUnfollowedPath,
           "relationships_unfollowed_users",
@@ -398,7 +475,7 @@ export async function parseInstagramConnectionsFromZip(
     if (text != null) {
       const parsed = safeJsonParse(text, removedSuggestionsPath);
       if (parsed.ok) {
-        const extracted = extractUsersFromValueRelationship(
+        const extracted = extractUsersFromValueRelationshipOrLabelValues(
           parsed.value,
           removedSuggestionsPath,
           "relationships_dismissed_suggested_users",
